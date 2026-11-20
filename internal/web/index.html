@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#10241f">
+  <title>Echo</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="boot" class="boot">
+    <span class="spinner" aria-hidden="true"></span>
+    <p>正在连接服务…</p>
+  </div>
+
+  <section id="auth-view" class="auth" hidden aria-label="登录注册">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <span class="logo" aria-hidden="true">声</span>
+        <div>
+          <h1>Echo</h1>
+          <p>搜索 · 下载 · 转有声书</p>
+        </div>
+      </div>
+
+      <div class="segmented auth-tabs" id="auth-tabs" role="tablist" aria-label="登录或注册">
+        <button type="button" id="auth-login-tab" class="active" data-auth-mode="login" role="tab" aria-selected="true">登录</button>
+        <button type="button" id="auth-register-tab" data-auth-mode="register" role="tab" aria-selected="false">注册</button>
+      </div>
+
+      <form id="auth-form" class="auth-form" novalidate>
+        <label class="field">
+          <span>邮箱</span>
+          <input id="auth-email" name="email" type="email" inputmode="email" autocomplete="username" placeholder="you@example.com" required>
+        </label>
+        <label class="field">
+          <span>密码</span>
+          <input id="auth-password" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
+        </label>
+        <p class="form-error" id="auth-error" role="alert" hidden></p>
+        <button type="submit" class="btn primary block" id="auth-submit">登录</button>
+      </form>
+
+      <p class="auth-footnote" id="auth-footnote">请使用已有账号登录。</p>
+      <p class="auth-note">本页面仅用于本地服务测试，数据不会离开你的服务器。</p>
+    </div>
+  </section>
+
+  <div id="app-view" class="app" hidden>
+    <header class="topbar">
+      <a class="brand" href="#/search">
+        <span class="logo" aria-hidden="true">声</span>
+        <span class="brand-name">Echo</span>
+      </a>
+      <nav class="tabs" id="main-nav" aria-label="主导航">
+        <a href="#/search" data-tab="search">搜索</a>
+        <a href="#/library" data-tab="library">书库</a>
+        <a href="#/jobs" data-tab="jobs">任务</a>
+        <a href="#/audiobooks" data-tab="audiobooks">有声书</a>
+        <a href="#/account" data-tab="account">账号</a>
+      </nav>
+      <div class="userbox">
+        <span class="user-email" id="user-email" title="当前账号"></span>
+        <button type="button" class="btn ghost small" data-action="logout">退出</button>
+      </div>
+    </header>
+
+    <main class="main" id="main" aria-live="polite"></main>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="assertive" aria-atomic="false"></div>
+
+  <noscript>
+    <div class="noscript-note">本页面需要启用 JavaScript 才能使用。</div>
+  </noscript>
+
+  <dialog id="modal" class="modal" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <header class="modal-head">
+        <h2 id="modal-title">提示</h2>
+        <button type="button" class="icon-btn" data-close-modal aria-label="关闭">×</button>
+      </header>
+      <div class="modal-body" id="modal-body"></div>
+      <footer class="modal-foot" id="modal-foot" hidden></footer>
+    </div>
+  </dialog>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

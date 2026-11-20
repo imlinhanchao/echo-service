@@ -1,0 +1,46 @@
+services:
+  mysql:
+    image: mysql:8.0
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-echo_root_password}
+      MYSQL_DATABASE: ${ECHO_MYSQL_DB:-echo_service}
+      MYSQL_USER: ${ECHO_MYSQL_USER:-echo}
+      MYSQL_PASSWORD: ${ECHO_MYSQL_PASSWORD:-echo_password}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  echo-service:
+    build: .
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      ECHO_ADDR: 0.0.0.0:8090
+      ECHO_DATA_DIR: /app/data
+      ECHO_MYSQL_HOST: mysql
+      ECHO_MYSQL_PORT: "3306"
+      ECHO_MYSQL_USER: ${ECHO_MYSQL_USER:-echo}
+      ECHO_MYSQL_PASSWORD: ${ECHO_MYSQL_PASSWORD:-echo_password}
+      ECHO_MYSQL_DB: ${ECHO_MYSQL_DB:-echo_service}
+      ECHO_ALLOW_REGISTRATION: ${ECHO_ALLOW_REGISTRATION:-1}
+      # TTS 服务默认在宿主机 8123（Docker Desktop / 带 host-gateway 的 Linux 均可访问）
+      TTS_BASE_URL: ${TTS_BASE_URL:-http://host.docker.internal:8123}
+      FFMPEG_PATH: /usr/bin/ffmpeg
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8090:8090"
+    volumes:
+      - app-data:/app/data
+
+volumes:
+  mysql-data:
+  app-data:

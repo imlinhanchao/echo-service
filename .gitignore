@@ -1,0 +1,14 @@
+.env
+data/
+bin/
+.tmp/
+*.log
+*.test
+*.cookies
+.gopath/
+.gomodcache/
+.gocache/
+node_modules/
+.DS_Store
+.idea/
+.vscode/

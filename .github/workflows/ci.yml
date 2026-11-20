@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Unit tests
+        run: go test ./...
+
+  mysql-test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: echo_service_test
+          MYSQL_USER: echo
+          MYSQL_PASSWORD: echo
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uecho -pecho --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+      - name: MySQL integration tests
+        env:
+          ECHO_TEST_MYSQL: "1"
+          ECHO_MYSQL_HOST: 127.0.0.1
+          ECHO_MYSQL_PORT: "3306"
+          ECHO_MYSQL_USER: echo
+          ECHO_MYSQL_PASSWORD: echo
+          ECHO_TEST_MYSQL_DB: echo_service_test
+        run: go test ./internal/store -v

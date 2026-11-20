@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+data/
+bin/
+.tmp/
+*.log
+*.test
+.gopath/
+.gomodcache/
+.gocache/
+docs/screenshots
