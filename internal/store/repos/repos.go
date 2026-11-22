@@ -24,6 +24,7 @@ type Repos struct {
 	Audiobooks *AudiobookRepo
 	Settings   *SettingsRepo
 	APITokens  *APITokenRepo
+	Sync       *SyncRepo
 }
 
 func New(db *gorm.DB) *Repos {
@@ -37,6 +38,7 @@ func New(db *gorm.DB) *Repos {
 		Audiobooks: &AudiobookRepo{db: db},
 		Settings:   &SettingsRepo{db: db},
 		APITokens:  &APITokenRepo{db: db},
+		Sync:       &SyncRepo{db: db},
 	}
 }
 
@@ -405,6 +407,17 @@ func (r *AudiobookRepo) ListByBook(ctx context.Context, userID, bookID uint64) (
 func (r *AudiobookRepo) UpdateProgress(ctx context.Context, id uint64, progress uint8) error {
 	return r.db.WithContext(ctx).Model(&models.Audiobook{}).
 		Where("id = ?", id).Update("progress", progress).Error
+}
+
+func (r *AudiobookRepo) UpdatePartial(ctx context.Context, id uint64, manifestPath, format string, durationS float64, sizeBytes uint64) error {
+	updates := map[string]any{
+		"manifest_path": manifestPath,
+		"format":        format,
+		"duration_s":    durationS,
+		"size_bytes":    sizeBytes,
+	}
+	return r.db.WithContext(ctx).Model(&models.Audiobook{}).
+		Where("id = ?", id).Updates(updates).Error
 }
 
 func (r *AudiobookRepo) Finish(ctx context.Context, id uint64, status, errMsg string, a *models.Audiobook) error {

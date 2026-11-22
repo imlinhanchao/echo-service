@@ -395,6 +395,24 @@ func (m *Manager) runAudiobook(ctx context.Context, job *models.Job) (any, error
 		MaxChars:           m.cfg.MaxJobChars,
 		FFmpegPath:         m.cfg.FFmpegPath,
 		SegmentConcurrency: concurrency,
+		OnChunkReady: func(manifestPath string, manifest *audiobook.Manifest) {
+			relManifest, err := filepath.Rel(m.cfg.DataDir, manifestPath)
+			if err != nil {
+				return
+			}
+			var size uint64
+			for _, c := range manifest.Chunks {
+				size += uint64(c.SizeBytes)
+			}
+			_ = m.repos.Audiobooks.UpdatePartial(
+				context.WithoutCancel(ctx),
+				rec.ID,
+				relManifest,
+				manifest.Format,
+				manifest.DurationS,
+				size,
+			)
+		},
 	}
 	res, err := audiobook.Run(ctx, m.tts, epubPath, audiobookDir, opts, progress, cancelled)
 	if err != nil {

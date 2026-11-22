@@ -28,8 +28,9 @@ type Options struct {
 	MaxChars            int   // 全书字符上限，0 = 不限制
 	FFmpegPath          string
 	SegmentConcurrency  int
-	ReuseSegments       bool // true 时复用 segments/%05d.wav，只补缺失段（断点续转）
-	ChapterChunkSeconds int  // 章节分块上限秒数，0 表示默认 1800（30 分钟）
+	ReuseSegments       bool                                         // true 时复用 segments/%05d.wav，只补缺失段（断点续转）
+	ChapterChunkSeconds int                                          // 章节分块上限秒数，0 表示默认 1800（30 分钟）
+	OnChunkReady        func(manifestPath string, manifest *Manifest) // 每完成一个可播放章节/30分钟分块即回调
 }
 
 // ChapterMark locates a chapter on the final audio timeline.
@@ -172,14 +173,37 @@ func Run(ctx context.Context, ttsClient *tts.Client, epubPath, outputDir string,
 		addWarning(fmt.Sprintf("模型预热失败: %v", err))
 	}
 
+	type blockRange struct {
+		startSeg int
+		endSeg   int
+	}
+	blockRanges := make([]blockRange, len(blocks))
 	tasks := make([]segmentTask, 0, totalSegments)
 	g := 0
 	for ci, b := range blocks {
+		if len(b.segments) == 0 {
+			continue
+		}
+		start := g + 1
 		for _, s := range b.segments {
 			g++
 			tasks = append(tasks, segmentTask{global: g, chapter: ci, text: s})
 		}
+		blockRanges[ci] = blockRange{startSeg: start, endSeg: g}
 	}
+
+	chunkSeconds := opts.ChapterChunkSeconds
+	if chunkSeconds <= 0 {
+		chunkSeconds = 1800
+	}
+	chaptersDir := filepath.Join(outputDir, "chapters")
+	if err := os.RemoveAll(chaptersDir); err != nil {
+		return nil, fmt.Errorf("清理章节目录: %w", err)
+	}
+	if err := os.MkdirAll(chaptersDir, 0o755); err != nil {
+		return nil, fmt.Errorf("创建章节目录: %w", err)
+	}
+	manifestPath := filepath.Join(outputDir, "manifest.json")
 
 	results := make([]segmentResult, totalSegments+1)
 	workerCtx, cancel := context.WithCancel(ctx)
@@ -206,6 +230,201 @@ func Run(ctx context.Context, ttsClient *tts.Client, epubPath, outputDir string,
 		}
 		mu.Unlock()
 	}
+
+	// Dedicated sequential chunk emitter: as soon as the next chapter (or a
+	// <=chunkSeconds slice of a long chapter) finishes synthesizing, master it
+	// directly to chapters/%04d.{mp3|wav} + .srt and atomically update
+	// manifest.json so listeners can start playback right after chunk #1.
+	emitNotify := make(chan struct{}, 1)
+	emitDone := make(chan struct{})
+	triggerEmit := func() {
+		select {
+		case emitNotify <- struct{}{}:
+		default:
+		}
+	}
+
+	chunkFormat := "wav"
+	if strings.TrimSpace(opts.FFmpegPath) != "" {
+		chunkFormat = "mp3"
+	}
+	manifest := Manifest{
+		Version:      1,
+		Format:       chunkFormat,
+		ChunkSeconds: chunkSeconds,
+	}
+	var emittedSizeBytes int64
+	var emitErr error
+
+	go func() {
+		defer close(emitDone)
+		blockIdx := 0
+		segStart := 0
+		partInBlock := 0
+		timelineCursor := 0.0
+
+		emitSlice := func(ci, sFrom, sTo, partNum int, isMultiPart bool) error {
+			count := sTo - sFrom + 1
+			slicePaths := make([]string, count)
+			sliceCues := make([]srtCue, 0, count)
+			localCursor := 0.0
+
+			mu.Lock()
+			for idx := 0; idx < count; idx++ {
+				r := results[sFrom+idx]
+				slicePaths[idx] = r.path
+				if idx > 0 {
+					localCursor += gapSeconds
+				}
+				dur := r.durationS
+				sliceCues = append(sliceCues, srtCue{
+					Start: localCursor,
+					End:   localCursor + dur,
+					Text:  r.text,
+				})
+				localCursor += dur
+			}
+			mu.Unlock()
+
+			n := len(manifest.Chunks) + 1
+			wavOut := filepath.Join(chaptersDir, fmt.Sprintf("%04d.wav", n))
+			frames, err := writeMasteredWAVStream(wavOut, slicePaths, gapSeconds, targetSampleRate)
+			if err != nil {
+				return fmt.Errorf("写入第 %d 块音频: %w", n, err)
+			}
+			actualDur := float64(frames) / float64(targetSampleRate)
+
+			audioName := fmt.Sprintf("%04d.wav", n)
+			audioPath := wavOut
+			if strings.TrimSpace(opts.FFmpegPath) != "" {
+				mp3Name := fmt.Sprintf("%04d.mp3", n)
+				mp3Out := filepath.Join(chaptersDir, mp3Name)
+				if err := encodeMP3(opts.FFmpegPath, wavOut, mp3Out); err != nil {
+					_ = os.Remove(mp3Out)
+					addWarning(fmt.Sprintf("第 %d 块 MP3 编码失败，保留 WAV: %v", n, err))
+					manifest.Format = "wav"
+				} else {
+					_ = os.Remove(wavOut)
+					audioName = mp3Name
+					audioPath = mp3Out
+				}
+			}
+
+			srtName := fmt.Sprintf("%04d.srt", n)
+			if err := writeSRTFile(filepath.Join(chaptersDir, srtName), sliceCues); err != nil {
+				return fmt.Errorf("写入第 %d 块字幕: %w", n, err)
+			}
+
+			size := int64(0)
+			if st, serr := os.Stat(audioPath); serr == nil {
+				size = st.Size()
+			}
+			title := blocks[ci].chapter.Title
+			if isMultiPart {
+				title = fmt.Sprintf("%s（%d）", title, partNum)
+			}
+			startS := timelineCursor
+			endS := startS + actualDur
+			timelineCursor = endS
+
+			manifest.Chunks = append(manifest.Chunks, ChunkInfo{
+				N:            n,
+				ChapterIndex: blocks[ci].chapter.Index,
+				Title:        title,
+				StartS:       math.Round(startS*1000) / 1000,
+				EndS:         math.Round(endS*1000) / 1000,
+				DurationS:    math.Round(actualDur*1000) / 1000,
+				SizeBytes:    size,
+				AudioFile:    audioName,
+				SRTFile:      srtName,
+			})
+			manifest.DurationS = math.Round(timelineCursor*1000) / 1000
+			emittedSizeBytes += size
+
+			raw, err := json.MarshalIndent(manifest, "", "  ")
+			if err != nil {
+				return fmt.Errorf("序列化 manifest.json: %w", err)
+			}
+			tmpManifest := manifestPath + ".tmp"
+			if err := os.WriteFile(tmpManifest, raw, 0o644); err != nil {
+				return fmt.Errorf("写入 manifest.json.tmp: %w", err)
+			}
+			if err := os.Rename(tmpManifest, manifestPath); err != nil {
+				return fmt.Errorf("更新 manifest.json: %w", err)
+			}
+			if opts.OnChunkReady != nil {
+				snap := manifest
+				snap.Chunks = append([]ChunkInfo(nil), manifest.Chunks...)
+				opts.OnChunkReady(manifestPath, &snap)
+			}
+			return nil
+		}
+
+		drainReady := func() {
+			for blockIdx < len(blocks) {
+				if workerCtx.Err() != nil {
+					return
+				}
+				br := blockRanges[blockIdx]
+				if br.startSeg == 0 {
+					blockIdx++
+					segStart = 0
+					partInBlock = 0
+					continue
+				}
+				if segStart == 0 {
+					segStart = br.startSeg
+				}
+				// Scan contiguous ready segments starting at segStart.
+				mu.Lock()
+				accDur := 0.0
+				readyEnd := segStart - 1
+				crossedLimit := false
+				for s := segStart; s <= br.endSeg; s++ {
+					if results[s].path == "" {
+						break
+					}
+					if s > segStart {
+						accDur += gapSeconds
+					}
+					accDur += results[s].durationS
+					readyEnd = s
+					if accDur >= float64(chunkSeconds) {
+						crossedLimit = true
+						break
+					}
+				}
+				mu.Unlock()
+
+				if readyEnd < segStart {
+					return
+				}
+				if readyEnd == br.endSeg || crossedLimit {
+					partInBlock++
+					isMultiPart := partInBlock > 1 || readyEnd < br.endSeg
+					if err := emitSlice(blockIdx, segStart, readyEnd, partInBlock, isMultiPart); err != nil {
+						emitErr = err
+						setErr(err)
+						return
+					}
+					if readyEnd == br.endSeg {
+						blockIdx++
+						segStart = 0
+						partInBlock = 0
+					} else {
+						segStart = readyEnd + 1
+					}
+					continue
+				}
+				return
+			}
+		}
+
+		for range emitNotify {
+			drainReady()
+		}
+		drainReady()
+	}()
 
 	worker := func() {
 		for t := range taskCh {
@@ -305,6 +524,7 @@ func Run(ctx context.Context, ttsClient *tts.Client, epubPath, outputDir string,
 			pct := uint8(completed * 100 / totalSegments)
 			progress(pct, fmt.Sprintf("已合成 %d/%d 段", completed, totalSegments))
 			mu.Unlock()
+			triggerEmit()
 		}
 	}
 
@@ -321,6 +541,8 @@ func Run(ctx context.Context, ttsClient *tts.Client, epubPath, outputDir string,
 		}()
 	}
 	wg.Wait()
+	close(emitNotify)
+	<-emitDone
 
 	mu.Lock()
 	runErr := firstErr
@@ -328,14 +550,15 @@ func Run(ctx context.Context, ttsClient *tts.Client, epubPath, outputDir string,
 	if runErr != nil {
 		return nil, runErr
 	}
+	if emitErr != nil {
+		return nil, emitErr
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	// Collect segment paths and make sure every duration is known for the SRT.
-	segPaths := make([]string, totalSegments)
+	// Ensure every segment duration is populated for full-book subtitles & chapter marks.
 	for i := 1; i <= totalSegments; i++ {
-		segPaths[i-1] = results[i].path
 		if results[i].durationS <= 0 {
 			if data, err := os.ReadFile(results[i].path); err == nil {
 				if d, derr := wavDurationSeconds(data); derr == nil {
@@ -355,16 +578,9 @@ func Run(ctx context.Context, ttsClient *tts.Client, epubPath, outputDir string,
 		times[i] = segmentTime{start: cursor, end: cursor + dur}
 		cursor += dur
 	}
-	computedTotal := cursor
-
-	finalWAV := filepath.Join(outputDir, "final.wav")
-	totalFrames, err := writeMasteredWAVStream(finalWAV, segPaths, gapSeconds, targetSampleRate)
-	if err != nil {
-		return nil, fmt.Errorf("写入 final.wav: %w", err)
-	}
-	actualDuration := float64(totalFrames) / float64(targetSampleRate)
-	if math.Abs(actualDuration-computedTotal) > 0.1 {
-		addWarning(fmt.Sprintf("字幕时间轴总长 %.3fs 与音频实际时长 %.3fs 不一致", computedTotal, actualDuration))
+	actualDuration := manifest.DurationS
+	if actualDuration <= 0 {
+		actualDuration = cursor
 	}
 
 	srtPath := filepath.Join(outputDir, "subtitles.srt")
@@ -410,57 +626,17 @@ func Run(ctx context.Context, ttsClient *tts.Client, epubPath, outputDir string,
 		return nil, fmt.Errorf("写入 chapters.json: %w", err)
 	}
 
-	audioPath := finalWAV
-	format := "wav"
-	if strings.TrimSpace(opts.FFmpegPath) != "" {
-		mp3Path := filepath.Join(outputDir, "final.mp3")
-		if err := encodeMP3(opts.FFmpegPath, finalWAV, mp3Path); err != nil {
-			_ = os.Remove(mp3Path)
-			addWarning(fmt.Sprintf("MP3 编码失败，保留 WAV: %v", err))
-		} else {
-			_ = os.Remove(finalWAV)
-			audioPath = mp3Path
-			format = "mp3"
-		}
-	}
-
-	// Split into per-chapter chunks (<=30 min each) so apps can stream/seek and
-	// resume downloads without pulling a multi-GB file. The full file is kept.
-	chunkSeconds := opts.ChapterChunkSeconds
-	if chunkSeconds <= 0 {
-		chunkSeconds = 1800
-	}
-	manifestPath := ""
-	sizeBytes := int64(0)
-	if manifest, serr := SplitByChapters(audioPath, filepath.Join(outputDir, "chapters.json"), srtPath, outputDir, opts.FFmpegPath, chunkSeconds); serr != nil {
-		addWarning(fmt.Sprintf("章节分块失败: %v", serr))
-		stat, err := os.Stat(audioPath)
-		if err != nil {
-			return nil, fmt.Errorf("读取最终音频信息: %w", err)
-		}
-		sizeBytes = stat.Size()
-	} else {
-		// The full-length file is redundant once per-chapter chunks exist;
-		// drop it so a 15-hour book does not occupy twice the disk.
-		manifestPath = filepath.Join(outputDir, "manifest.json")
-		for _, c := range manifest.Chunks {
-			sizeBytes += c.SizeBytes
-		}
-		_ = os.Remove(audioPath)
-		audioPath = ""
-	}
-
 	warnMu.Lock()
 	finalWarnings := append([]string(nil), warnings...)
 	warnMu.Unlock()
 
 	return &Result{
-		AudioPath:    audioPath,
+		AudioPath:    "",
 		SRTPath:      srtPath,
 		ManifestPath: manifestPath,
-		Format:       format,
+		Format:       manifest.Format,
 		DurationS:    actualDuration,
-		SizeBytes:    sizeBytes,
+		SizeBytes:    emittedSizeBytes,
 		Segments:     totalSegments,
 		Chars:        totalChars,
 		Chapters:     marks,
