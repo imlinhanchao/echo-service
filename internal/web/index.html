@@ -43,6 +43,13 @@
       </form>
 
       <p class="auth-footnote" id="auth-footnote">请使用已有账号登录。</p>
+      <div id="auth-app-download" class="app-download-card" hidden>
+        <div class="app-download-info">
+          <strong class="app-download-title">下载 Android 客户端</strong>
+          <span class="app-download-meta" id="auth-app-meta"></span>
+        </div>
+        <a id="auth-app-link" class="btn small app-dl-primary" href="/downloads/app/latest.apk" download>下载 APK</a>
+      </div>
       <p class="auth-note">本页面仅用于本地服务测试，数据不会离开你的服务器。</p>
     </div>
   </section>
@@ -61,6 +68,7 @@
         <a href="#/account" data-tab="account">账号</a>
       </nav>
       <div class="userbox">
+        <a id="topbar-app-download" class="btn ghost small app-dl-btn" href="/downloads/app/latest.apk" download hidden>下载 APK</a>
         <span class="user-email" id="user-email" title="当前账号"></span>
         <button type="button" class="btn ghost small" data-action="logout">退出</button>
       </div>

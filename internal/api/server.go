@@ -107,6 +107,17 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/files/books/{id}", s.auth(s.handleBookFile))
 	m.HandleFunc("GET /api/files/audiobooks/{id}", s.auth(s.handleAudiobookFile))
 
+	// sync (cloud progress & notes)
+	m.HandleFunc("GET /api/sync/progress", s.auth(s.handleGetProgress))
+	m.HandleFunc("POST /api/sync/progress", s.auth(s.handlePostProgress))
+	m.HandleFunc("GET /api/sync/notes", s.auth(s.handleGetNotes))
+	m.HandleFunc("POST /api/sync/notes", s.auth(s.handlePostNotes))
+	m.HandleFunc("DELETE /api/sync/notes/{id}", s.auth(s.handleDeleteNote))
+
+	// app downloads (public)
+	m.HandleFunc("GET /api/app/latest", s.handleLatestApp)
+	m.HandleFunc("GET /downloads/app/latest.apk", s.handleDownloadLatestApp)
+
 	// frontend
 	m.Handle("GET /", http.FileServerFS(web.Assets))
 }

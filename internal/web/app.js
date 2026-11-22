@@ -17,8 +17,12 @@
     authError: document.getElementById('auth-error'),
     authSubmit: document.getElementById('auth-submit'),
     authFootnote: document.getElementById('auth-footnote'),
+    authAppDownload: document.getElementById('auth-app-download'),
+    authAppMeta: document.getElementById('auth-app-meta'),
+    authAppLink: document.getElementById('auth-app-link'),
     appView: document.getElementById('app-view'),
     mainNav: document.getElementById('main-nav'),
+    topbarAppDownload: document.getElementById('topbar-app-download'),
     userEmail: document.getElementById('user-email'),
     main: document.getElementById('main'),
     toasts: document.getElementById('toasts'),
@@ -778,8 +782,38 @@
     toast('已退出登录', 'info');
   }
 
+  async function loadAppDownload() {
+    try {
+      const info = await api.get('/api/app/latest', { quiet: true, handleAuth: false });
+      if (!info || !info.available || !info.download_url) return;
+      const version = info.version ? `${info.version}` : '最新版';
+      const sizeText = info.size ? fmtBytes(info.size) : '';
+      const metaParts = [version, sizeText].filter(Boolean);
+      const metaText = metaParts.join(' · ');
+
+      if (dom.authAppDownload && dom.authAppLink) {
+        dom.authAppLink.href = info.download_url;
+        if (info.filename) dom.authAppLink.setAttribute('download', info.filename);
+        if (dom.authAppMeta) {
+          dom.authAppMeta.textContent = metaText || info.filename || 'Android APK';
+        }
+        dom.authAppDownload.hidden = false;
+      }
+      if (dom.topbarAppDownload) {
+        dom.topbarAppDownload.href = info.download_url;
+        if (info.filename) dom.topbarAppDownload.setAttribute('download', info.filename);
+        dom.topbarAppDownload.textContent = info.version ? `下载 App (${info.version})` : '下载 App';
+        dom.topbarAppDownload.title = `${info.filename || 'Android APK'}${sizeText ? ` · ${sizeText}` : ''}`;
+        dom.topbarAppDownload.hidden = false;
+      }
+    } catch (_) {
+      // 无安装包或网络异常时静默隐藏下载入口
+    }
+  }
+
   async function boot() {
     bindEvents();
+    loadAppDownload();
     try {
       const me = await api.get('/api/auth/me', { quiet: true, handleAuth: false });
       setRegistrationOpen(me.registration_open);
