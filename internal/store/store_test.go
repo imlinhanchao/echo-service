@@ -61,7 +61,7 @@ func setup(t *testing.T) *repos.Repos {
 	if err := db.Exec("SET FOREIGN_KEY_CHECKS=0").Error; err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"audiobooks", "jobs", "books", "provider_accounts", "sessions", "user_settings", "users"} {
+	for _, table := range []string{"user_progress", "user_notes", "audiobooks", "jobs", "books", "provider_accounts", "sessions", "user_settings", "users"} {
 		if err := db.Exec("TRUNCATE TABLE " + table).Error; err != nil {
 			t.Fatalf("清空 %s: %v", table, err)
 		}
@@ -250,5 +250,101 @@ func TestAPITokenLifecycle(t *testing.T) {
 	// 清理过期/撤销记录
 	if n, err := r.APITokens.DeleteExpired(ctx); err != nil || n < 2 {
 		t.Fatalf("清理数量 = %d, err = %v", n, err)
+	}
+}
+
+func TestSyncProgressAndNotes(t *testing.T) {
+	r := setup(t)
+	ctx := context.Background()
+	user, err := r.Users.Create(ctx, "sync@example.com", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. 测试进度创建与 LWW 冲突解决
+	t1 := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	p1 := &models.UserProgress{
+		UserID:       user.ID,
+		ItemType:     "audiobook",
+		ItemID:       101,
+		ChapterIndex: 1,
+		ChunkN:       1,
+		OffsetMs:     30000,
+		UpdatedAt:    t1,
+	}
+	if err := r.Sync.UpsertProgress(ctx, p1); err != nil {
+		t.Fatalf("创建进度失败: %v", err)
+	}
+
+	// 尝试用更旧的时间戳写入，应该被忽略（LWW）
+	tOld := t1.Add(-10 * time.Minute)
+	pOld := &models.UserProgress{
+		UserID:       user.ID,
+		ItemType:     "audiobook",
+		ItemID:       101,
+		ChapterIndex: 0,
+		OffsetMs:     1000,
+		UpdatedAt:    tOld,
+	}
+	if err := r.Sync.UpsertProgress(ctx, pOld); err != nil {
+		t.Fatalf("旧进度写入异常: %v", err)
+	}
+
+	list, err := r.Sync.ListProgress(ctx, user.ID)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("进度列表数量不对: %d, err: %v", len(list), err)
+	}
+	if list[0].OffsetMs != 30000 || list[0].ChapterIndex != 1 {
+		t.Fatalf("旧进度不应覆盖新进度: %+v", list[0])
+	}
+
+	// 用更新的时间戳写入，应该成功覆盖
+	tNew := t1.Add(10 * time.Minute)
+	pNew := &models.UserProgress{
+		UserID:       user.ID,
+		ItemType:     "audiobook",
+		ItemID:       101,
+		ChapterIndex: 2,
+		ChunkN:       2,
+		OffsetMs:     60000,
+		UpdatedAt:    tNew,
+	}
+	if err := r.Sync.UpsertProgress(ctx, pNew); err != nil {
+		t.Fatalf("新进度写入失败: %v", err)
+	}
+	list, _ = r.Sync.ListProgress(ctx, user.ID)
+	if list[0].OffsetMs != 60000 || list[0].ChapterIndex != 2 {
+		t.Fatalf("新进度应成功更新: %+v", list[0])
+	}
+
+	// 2. 测试笔记创建、列表与删除
+	n1 := &models.UserNote{
+		ID:          "note-1",
+		UserID:      user.ID,
+		AudiobookID: 101,
+		PositionMs:  15000,
+		Text:        "精彩论点",
+		Chapter:     "第 1 章",
+		CreatedAt:   t1,
+		UpdatedAt:   t1,
+	}
+	if err := r.Sync.UpsertNote(ctx, n1); err != nil {
+		t.Fatalf("写入笔记失败: %v", err)
+	}
+
+	notes, err := r.Sync.ListNotes(ctx, user.ID, 101)
+	if err != nil || len(notes) != 1 {
+		t.Fatalf("读取笔记数量不对: %d, err: %v", len(notes), err)
+	}
+	if notes[0].Text != "精彩论点" {
+		t.Fatalf("笔记内容不匹配: %+v", notes[0])
+	}
+
+	if err := r.Sync.DeleteNote(ctx, user.ID, "note-1"); err != nil {
+		t.Fatalf("删除笔记失败: %v", err)
+	}
+	notes, _ = r.Sync.ListNotes(ctx, user.ID, 101)
+	if len(notes) != 0 {
+		t.Fatalf("删除后笔记列表应为空，实际得到: %d", len(notes))
 	}
 }

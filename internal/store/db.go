@@ -67,6 +67,8 @@ func Open(cfg *config.Config) (*gorm.DB, error) {
 		&models.Audiobook{},
 		&models.UserSettings{},
 		&models.APIToken{},
+		&models.UserProgress{},
+		&models.UserNote{},
 	); err != nil {
 		return nil, fmt.Errorf("AutoMigrate 失败: %w", err)
 	}
